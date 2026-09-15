@@ -1,0 +1,16 @@
+{
+  "_comment": "Site-specific tag conventions. Pass with --conventions. Every field is optional and merges over the built-in defaults.",
+
+  "equipment_prefixes": {
+    "XC": {"kind": "vessel",          "desc": "Crystalliser"},
+    "SR": {"kind": "vessel",          "desc": "Surge Drum"},
+    "OS": {"kind": "vessel",          "desc": "Oil Separator"},
+    "EC": {"kind": "heat_exchanger",  "desc": "Economiser"},
+    "EV": {"kind": "heat_exchanger",  "desc": "Evaporator"},
+    "RC": {"kind": "vessel",          "desc": "Liquid Receiver"}
+  },
+
+  "stop_prefixes": ["CPI", "GEA", "WR", "SST"],
+
+  "notes": "Kinds must be one of: vessel, pump, compressor, heat_exchanger, driver, valve, instrument, inline_device, connector, equipment_other."
+}
