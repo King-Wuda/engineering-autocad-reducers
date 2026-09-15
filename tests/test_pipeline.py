@@ -256,6 +256,70 @@ def test_connections_are_remapped_to_merged_ids():
     assert connections[0].line_number == '6"-P-1102-A1A'
 
 
+def test_two_symbols_in_one_tile_are_never_merged():
+    """The observer saw one image and reported two things: believe it.
+
+    On an IEC 81346 drawing the same designation is scoped to its parent
+    block, so two different vessels can both be printed "=C1".
+    """
+    tiles = [(_FakeTile(0), TileResult(components=[
+        _tile_comp("c1", "vessel", "=C1", (100, 100, 140, 140)),
+        _tile_comp("c2", "vessel", "=C1", (150, 140, 190, 180)),
+    ], connections=[]))]
+    merged, _, _ = merge_page(_FakePage(), tiles)
+    assert len(merged) == 2
+
+
+def test_conflicting_detail_blocks_a_merge():
+    """A 1200x2500 vertical drum is not a 1000x150 horizontal one."""
+    big = _tile_comp("c1", "vessel", "=C1", (100, 100, 160, 160))
+    big.subtype, big.label = "vertical_drum", "DIA. 1200 X 2500"
+    small = _tile_comp("c1", "vessel", "=C1", (104, 104, 164, 164))
+    small.subtype, small.label = "horizontal_drum", "DIA. 1000 X 150"
+    tiles = [(_FakeTile(0), TileResult(components=[big], connections=[])),
+             (_FakeTile(1), TileResult(components=[small], connections=[]))]
+    merged, _, _ = merge_page(_FakePage(), tiles)
+    assert len(merged) == 2
+
+
+def test_reused_designation_is_not_collapsed():
+    """"PI =F" labels a dozen different gauges; each stays its own component."""
+    comps = [_tile_comp(f"c{i}", "instrument", "PI =F",
+                        (100 + i * 120, 100 + i * 90, 130 + i * 120, 130 + i * 90))
+             for i in range(6)]
+    tiles = [(_FakeTile(i), TileResult(components=[c], connections=[]))
+             for i, c in enumerate(comps)]
+    merged, _, _ = merge_page(_FakePage(), tiles)
+    assert len(merged) == 6
+
+
+def test_one_item_spanning_tiles_still_merges():
+    """The behaviour the tag rule exists for must survive."""
+    tiles = [
+        (_FakeTile(0), TileResult(components=[_tile_comp("c1", "vessel", "=R1", (400, 400, 520, 520))],
+                                  connections=[])),
+        (_FakeTile(1), TileResult(components=[_tile_comp("c1", "vessel", "=R1", (500, 420, 620, 540))],
+                                  connections=[])),
+    ]
+    merged, _, _ = merge_page(_FakePage(), tiles)
+    assert len(merged) == 1
+    assert merged[0].detections == 2
+
+
+@pytest.mark.parametrize("tag,function", [
+    ("PI =F", "Pressure/Vacuum Indicator"),
+    ("LSAL =F", "Level Switch Alarm Low"),
+    ("GIT =K1", "Gauging/Position Indicating Transmitter"),
+    ("PdI =P1", "Pressure/Vacuum Differential Indicator"),
+    ("TC =Q4", "Temperature Controller"),
+])
+def test_function_letters_over_designation_decode(tag, function):
+    """A bubble reading "PI" over "=F" is a pressure indicator."""
+    info = parse_tag(tag)
+    assert info.isa_function == function
+    assert info.normalized == tag, "the printed text must survive verbatim"
+
+
 def test_min_confidence_filters_detections():
     tiles = [(_FakeTile(0), TileResult(components=[
         _tile_comp("c1", "valve", "", (100, 100, 120, 120), conf=0.2),
@@ -420,6 +484,13 @@ def test_real_drawing_text_layer(sample_real_pdf):
                      "CS-200-A1010-032", "RD-80-A2505-001"):
         assert expected in lines, f"{expected} not extracted"
     assert len(lines) >= 30
+
+
+def test_zero_counts_render_as_zero(sample_pdf):
+    """A real count of 0 is information; a blank tile is a bug."""
+    from pid_scan.report import _esc
+    assert _esc(0) == "0"
+    assert _esc(None) == ""
 
 
 def test_cli_scan_reports_missing_file(capsys):

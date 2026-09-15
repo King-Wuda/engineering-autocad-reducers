@@ -24,9 +24,9 @@ IOU_SAME = 0.30
 #: clipped differently by two tiles can have a low IoU but a near-identical
 #: centre.
 CENTRE_SAME = 12.0
-#: A tagged component may be merged across this distance, since a large vessel
-#: legitimately spans tiles. Beyond it, a repeated tag is treated as a separate
-#: mention (usually a cross-reference note, not the equipment itself).
+#: All detections sharing a tag are merged only when they fit inside a
+#: neighbourhood this big. A vessel spanning four tiles does; a designation
+#: reused once per station across the sheet does not.
 TAG_MERGE_RADIUS = 220.0
 
 
@@ -50,6 +50,30 @@ class _Union:
 
 def _centre_distance(a: Box, b: Box) -> float:
     return ((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2) ** 0.5
+
+
+def _mergeable(a: Component, b: Component, tile_a: int, tile_b: int) -> bool:
+    """Whether two detections could be the same physical item.
+
+    The point of merging is to collapse the *same* symbol seen in overlapping
+    tiles. Two detections from one tile are therefore never merged: the model
+    looked at a single image and chose to report them separately, and
+    second-guessing that turns two hand valves into one. Conflicting
+    descriptive detail rules a merge out for the same reason - a 1200 x 2500
+    vertical drum and a 1000 x 150 horizontal drum are two vessels even when a
+    drawing scopes the same designation to both.
+    """
+    if tile_a == tile_b:
+        return False
+    if a.kind != b.kind:
+        return False
+    if a.tag and b.tag and a.tag != b.tag:
+        return False
+    if a.subtype and b.subtype and a.subtype != b.subtype:
+        return False
+    if a.label and b.label and a.label != b.label:
+        return False
+    return True
 
 
 def _resolve_kind(vision_kind: str, tag: Optional[TagInfo]) -> str:
@@ -82,6 +106,10 @@ def merge_page(
 
     # ---- 1. Lift every tile detection into page coordinates --------------
     raw: List[Component] = []
+    #: Which tile each raw detection came from. Two detections from the same
+    #: tile are two different symbols by construction - the model looked at one
+    #: image and reported them separately - so they are never merged.
+    origin: List[int] = []
     #: (tile_index, local_id) -> index into ``raw``
     local_index: Dict[Tuple[int, str], int] = {}
     texts: List[str] = []
@@ -97,6 +125,7 @@ def merge_page(
 
             tag_info = parse_tag(tc.tag, conventions) if tc.tag.strip() else None
             local_index[(tile.index, tc.local_id)] = len(raw)
+            origin.append(tile.index)
             raw.append(Component(
                 id=f"t{tile.index}_{tc.local_id}",
                 kind=_resolve_kind(tc.kind, tag_info),
@@ -121,33 +150,45 @@ def merge_page(
 
     # ---- 2. Group duplicate detections -----------------------------------
     union = _Union(len(raw))
+
+    # Geometry first. Two detections are the same symbol when they occupy the
+    # same place and belong to the same family. Restricted to matching kinds so
+    # a bubble sitting on top of a valve does not absorb it.
+    for i in range(len(raw)):
+        for j in range(i + 1, len(raw)):
+            if union.find(i) == union.find(j):
+                continue
+            if not _mergeable(raw[i], raw[j], origin[i], origin[j]):
+                continue
+            ci, cj = raw[i], raw[j]
+            if ci.box.iou(cj.box) >= IOU_SAME or _centre_distance(ci.box, cj.box) <= CENTRE_SAME:
+                union.union(i, j)
+
+    # Then tags, but only where the tag is actually behaving like a unique
+    # identifier. A large vessel clipped across four tiles gives four
+    # detections of one tag, all within a couple of hundred units of each
+    # other - those are one item. On an IEC 81346 drawing the same printed
+    # designation ("PI =F", "=Q3") is reused in every station and scoped by
+    # its parent block, so the same test correctly refuses to merge those:
+    # they are scattered across the whole sheet, not clustered in one spot.
     by_tag: Dict[str, List[int]] = {}
     for i, comp in enumerate(raw):
         if comp.tag:
             by_tag.setdefault(comp.tag, []).append(i)
 
-    # Same tag, and close enough to plausibly be one piece of equipment.
     for indices in by_tag.values():
+        if len(indices) < 2:
+            continue
+        boxes = [raw[i].box for i in indices]
+        span_x = max(b.cx for b in boxes) - min(b.cx for b in boxes)
+        span_y = max(b.cy for b in boxes) - min(b.cy for b in boxes)
+        if (span_x ** 2 + span_y ** 2) ** 0.5 > TAG_MERGE_RADIUS:
+            continue  # a reused designation, not one item seen several times
         for a in range(len(indices)):
             for b in range(a + 1, len(indices)):
                 ia, ib = indices[a], indices[b]
-                if _centre_distance(raw[ia].box, raw[ib].box) <= TAG_MERGE_RADIUS:
+                if _mergeable(raw[ia], raw[ib], origin[ia], origin[ib]):
                     union.union(ia, ib)
-
-    # Untagged (or differently tagged) items that are geometrically the same
-    # symbol. Restricted to matching families so a bubble sitting on top of a
-    # valve does not absorb it.
-    for i in range(len(raw)):
-        for j in range(i + 1, len(raw)):
-            if union.find(i) == union.find(j):
-                continue
-            ci, cj = raw[i], raw[j]
-            if ci.kind != cj.kind:
-                continue
-            if ci.tag and cj.tag and ci.tag != cj.tag:
-                continue
-            if ci.box.iou(cj.box) >= IOU_SAME or _centre_distance(ci.box, cj.box) <= CENTRE_SAME:
-                union.union(i, j)
 
     # ---- 3. Collapse each group into one component -----------------------
     groups: Dict[int, List[int]] = {}

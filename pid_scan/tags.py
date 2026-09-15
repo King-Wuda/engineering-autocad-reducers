@@ -134,7 +134,11 @@ LINE_NUMBER_RE = re.compile(
 #: European OEM drawings: =Q1, =A2A5, =P1P1, =K10. These identify an item
 #: within a plant breakdown structure and carry no symbol meaning, so unlike an
 #: ISA tag they must never be used to infer what a component *is*.
-RDS_RE = re.compile(r"^[=+-]{1,2}[A-Z]{1,3}\d{1,3}(?:[A-Z]{1,3}\d{0,3})*\??$")
+RDS_RE = re.compile(r"^[=+]{1,2}[A-Z][A-Z0-9?]*(?:-[A-Z0-9?]+)*$")
+
+#: The same, but requiring a digit. Used when scanning free text, where a bare
+#: "=F" is too generic to be worth reporting as a distinct item.
+RDS_STRICT_RE = re.compile(r"^[=+]{1,2}[A-Z]{1,3}\d{1,3}(?:[A-Z]{1,3}\d{0,3})*\??$")
 
 #: Tag pattern for scanning prose. Unlike TAG_RE it allows no space between
 #: the letters and the number.
@@ -279,6 +283,27 @@ def parse_tag(text: str, conventions: Optional[Dict] = None) -> Optional[TagInfo
     # and let the symbol decide what the component is.
     if RDS_RE.match(upper):
         return TagInfo(raw=verbatim, verbatim=verbatim, prefix="", number="",
+                       category="reference_designation")
+
+    # An instrument bubble on an IEC 81346 drawing reads as two pieces:
+    # function letters over a reference designation, e.g. "PI =F" or
+    # "LZHH =F" or "GIT =K1". Decode the letters, keep the whole string.
+    tokens = upper.split()
+    if len(tokens) > 1 and any(RDS_RE.match(tok) for tok in tokens):
+        for tok in tokens:
+            if tok.isalpha() and 2 <= len(tok) <= 5 and tok not in stop:
+                decoded = decode_instrument(tok)
+                if decoded:
+                    is_valve = tok in VALVE_INSTRUMENT_PREFIXES or tok[-1] in ("V", "Z")
+                    return TagInfo(
+                        raw=verbatim, verbatim=verbatim, prefix=tok, number="",
+                        category="instrument",
+                        measured_variable=decoded["measured_variable"],
+                        isa_function=decoded["function"],
+                        is_valve=is_valve,
+                        kind="valve" if is_valve else "instrument",
+                    )
+        return TagInfo(raw=verbatim, verbatim=verbatim,
                        category="reference_designation")
 
     # Some drawings print the ISA function letters separately from the item
@@ -429,7 +454,7 @@ def find_component_tags(text: str, conventions: Optional[Dict] = None) -> List[T
     # tags, and they are unambiguous because of the leading aspect character.
     for token in re.split(r"[\s,;()]+", upper):
         token = token.strip(".")
-        if RDS_RE.match(token):
+        if RDS_STRICT_RE.match(token):
             info = parse_tag(token, conventions)
             if info and info.normalized not in seen:
                 seen.add(info.normalized)

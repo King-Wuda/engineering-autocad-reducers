@@ -54,7 +54,8 @@ def family(kind: str) -> str:
 
 
 def _esc(value) -> str:
-    return html.escape(str(value or ""), quote=True)
+    # Not `value or ""` - that renders a real count of 0 as a blank tile.
+    return html.escape("" if value is None else str(value), quote=True)
 
 
 def missed_tags(page: Page) -> List[str]:
