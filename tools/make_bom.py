@@ -263,6 +263,28 @@ def build(result: Path, out: Path) -> None:
         write(ws, r, [c["tag"], c["subtype"].replace("_", " "), c["actuator"], "", c["notes"]])
         r += 1
 
+    # ----------------------------------------------------------- Placement
+    # Coordinates matching the DXF produced by tools/pdf_to_dxf.py, so an
+    # operator (or a placement script) can put each component where it belongs.
+    PAGE_W_PT, PAGE_H_PT, PT_MM = 3370.0, 2384.0, 25.4 / 72.0
+    ws = wb.create_sheet("Placement")
+    banner(ws, "Component positions in the same coordinate system as the DXF from "
+               "tools/pdf_to_dxf.py: millimetres, origin at the bottom-left corner of the "
+               "A0 sheet (1189 x 841 mm), Y upwards. Open the DXF in Plant 3D and place each "
+               "component at these coordinates.", 1, 6)
+    header(ws, 2, ["Tag as printed", "Class", "Detail", "X (mm)", "Y (mm)", "Notes"],
+           [24, 22, 22, 12, 12, 46])
+    r = 3
+    for c in sorted(comps, key=lambda c: (c["kind"], c["tag"])):
+        box = c["box"]
+        cx = (box["x0"] + box["x1"]) / 2.0
+        cy = (box["y0"] + box["y1"]) / 2.0
+        x_mm = round(cx / 1000.0 * PAGE_W_PT * PT_MM, 1)
+        y_mm = round((PAGE_H_PT - cy / 1000.0 * PAGE_H_PT) * PT_MM, 1)
+        write(ws, r, [c["tag"], KIND_LABEL.get(c["kind"], c["kind"]),
+                      c["subtype"].replace("_", " "), x_mm, y_mm, c["notes"]])
+        r += 1
+
     # ------------------------------------------------------------ Findings
     ws = wb.create_sheet("Findings")
     banner(ws, "Points a reviewer should resolve before this schedule is used.", 1, 4)
