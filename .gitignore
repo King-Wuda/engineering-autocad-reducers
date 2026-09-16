@@ -4,6 +4,10 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+# Generated scan output. Reproduce with:
+#   python tools/replay_reading.py   (report: .pid.html / .pid.md / .pid.json)
+#   python tools/make_bom.py         (schedules: .xlsx)
+out/
 *.pid.html
 *.pid.md
 *.pid.json
