@@ -169,11 +169,25 @@ class Converter:
     # -- sheet ------------------------------------------------------------
 
     def _sheet(self, msp, dxf) -> None:
-        """A0 sheet outline and a paperspace layout at 1:1."""
+        """Sheet outline, and an opening view that covers the whole sheet.
+
+        ezdxf resets $EXTMIN/$EXTMAX to their "unset" sentinels on save and
+        re-derives $LIMMIN/$LIMMAX, so setting those here would be a no-op -
+        AutoCAD recomputes the extents on its first regen anyway. What does
+        survive is the active viewport, so point it at the middle of the sheet.
+        Without that, a converted DXF opens on whatever view the template had
+        and looks empty until you Zoom Extents.
+        """
         w, h = self.page.rect.width * PT_MM, self.h * PT_MM
         dxf.layers.add("PID-SHEET", color=251).description = "Sheet extents"
         msp.add_lwpolyline([(0, 0), (w, 0), (w, h), (0, h)],
                            close=True, dxfattribs={"layer": "PID-SHEET"})
+
+        active = dxf.viewports.get("*Active")
+        if active:
+            view = active[0]
+            view.dxf.center = (w / 2.0, h / 2.0)
+            view.dxf.height = h * 1.05
         self.sheet = f"{w:.0f} x {h:.0f} mm"
 
 
