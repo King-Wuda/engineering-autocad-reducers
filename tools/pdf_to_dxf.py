@@ -66,12 +66,53 @@ def layer_for(colour):
 
 
 class Converter:
+    #: Half-width of the grid cell used to index text boxes, in PDF points.
+    CELL = 50.0
+
     def __init__(self, pdf: Path, page_no: int = 1):
         self.doc = pymupdf.open(pdf)
         self.page = self.doc[page_no - 1]
         self.h = self.page.rect.height
         self.stats = Counter()
         self.sheet = ""
+        self._index_text_boxes()
+
+    def _index_text_boxes(self) -> None:
+        """Index every text span's box, to spot glyph outlines later.
+
+        The AutoCAD PDF driver writes SHX-style text (Simplex, Simplex_IV25)
+        twice: once as real text, and again as filled vector paths tracing the
+        letterforms. Emitting both gives every tag a hollow outline with solid
+        text printed over it. We keep the text and drop the outlines, which
+        needs a fast "is this path inside a piece of text" test.
+        """
+        self.boxes: dict[tuple[int, int], list[tuple]] = {}
+        for block in self.page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if not span["text"].strip():
+                        continue
+                    box = span["bbox"]
+                    for key in self._cells(box):
+                        self.boxes.setdefault(key, []).append(box)
+
+    def _cells(self, box):
+        x0, y0, x1, y1 = box
+        for cx in range(int(x0 // self.CELL), int(x1 // self.CELL) + 1):
+            for cy in range(int(y0 // self.CELL), int(y1 // self.CELL) + 1):
+                yield (cx, cy)
+
+    def _is_glyph_outline(self, path) -> bool:
+        """A filled, unstroked path lying wholly inside a text span's box."""
+        if path.get("color") is not None or path.get("fill") is None:
+            return False
+        r, pad = path["rect"], 0.8
+        for key in self._cells((r.x0, r.y0, r.x1, r.y1)):
+            for x0, y0, x1, y1 in self.boxes.get(key, ()):
+                if (r.x0 >= x0 - pad and r.x1 <= x1 + pad
+                        and r.y0 >= y0 - pad and r.y1 <= y1 + pad):
+                    return True
+        return False
 
     def xy(self, p) -> tuple[float, float]:
         """PDF point (y down) -> DXF millimetre (y up)."""
@@ -101,6 +142,9 @@ class Converter:
 
     def _geometry(self, msp) -> None:
         for path in self.page.get_drawings():
+            if self._is_glyph_outline(path):
+                self.stats["glyph outlines dropped"] += 1
+                continue
             layer, _, _ = layer_for(path.get("color") or path.get("fill"))
             attrs = {"layer": layer}
             run: list[tuple[float, float]] = []
@@ -146,6 +190,9 @@ class Converter:
     # -- text -------------------------------------------------------------
 
     def _text(self, msp) -> None:
+        # A handful of labels are written twice by the source PDF at identical
+        # coordinates, which prints as fake-bold. Emit each once.
+        placed: set[tuple] = set()
         blocks = self.page.get_text("dict")["blocks"]
         for block in blocks:
             for line in block.get("lines", []):
@@ -158,6 +205,11 @@ class Converter:
                     if not text:
                         continue
                     x, y = self.xy(pymupdf.Point(span["origin"]))
+                    key = (text, round(x, 2), round(y, 2), round(span["size"], 2))
+                    if key in placed:
+                        self.stats["duplicate text dropped"] += 1
+                        continue
+                    placed.add(key)
                     msp.add_text(
                         text,
                         height=max(span["size"] * PT_MM, 0.4),
